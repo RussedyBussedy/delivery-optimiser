@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Blind Designs · Delivery Optimiser</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚚</text></svg>">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="truck">🚚</span><div><b>Blind Designs</b><span>Delivery Optimiser</span></div></div>
+  <input type="date" id="planDate">
+  <nav>
+    <button class="tab active" data-tab="plan">Today's plan</button>
+    <button class="tab" data-tab="book">Address book</button>
+    <button class="tab" data-tab="settings">Settings</button>
+  </nav>
+</header>
+
+<div id="keyNudge" class="banner warn" style="display:none">
+  Running in <b>offline mode</b> (estimated traffic). Add your Google Maps API key for live-traffic routing and precise geocoding.
+  <button class="btn small" id="keyNudgeBtn">Open settings</button>
+</div>
+
+<main>
+  <!-- ============ PLAN ============ -->
+  <section class="page" id="page-plan">
+    <div class="card">
+      <div class="card-head"><h2>1 · Areas for the day</h2><span class="note" id="schedNote"></span></div>
+      <div id="areaChips" class="chips"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>2 · Delivery stops <span class="note" id="stopCount"></span></h2>
+        <div>
+          <button class="btn" id="importBtn">⬆ Import orders (Excel/CSV)</button>
+          <button class="btn ghost" id="addCustomerBtn">+ Add customer</button>
+          <button class="btn ghost" id="clearDay" title="Clear this day">🗑</button>
+          <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" hidden>
+        </div>
+      </div>
+      <div id="stopList"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>3 · Optimised routes</h2>
+        <div>
+          <button class="btn primary" id="optimiseBtn">⚡ Optimise routes</button>
+          <button class="btn ghost" id="reoptBtn" title="Re-run with current van count">↻ Re-optimise</button>
+        </div>
+      </div>
+      <div class="note" id="optStatus"></div>
+      <div id="altBanner"></div>
+      <div id="result" class="vans"></div>
+    </div>
+  </section>
+
+  <!-- ============ ADDRESS BOOK ============ -->
+  <section class="page" id="page-book" style="display:none">
+    <div class="card">
+      <div class="card-head"><h2>Address book</h2>
+        <input type="search" id="bookSearch" placeholder="Search name, code or area…"></div>
+      <div id="bookList"></div>
+    </div>
+  </section>
+
+  <!-- ============ SETTINGS ============ -->
+  <section class="page" id="page-settings" style="display:none">
+    <div class="card">
+      <div class="card-head"><h2>Address book</h2></div>
+      <p class="note" id="bookStatus"></p>
+      <div class="form-row">
+        <button class="btn" id="bookFileBtn">⬆ Upload customer list (Excel)</button>
+        <button class="btn small ghost" id="clearBook">Remove uploaded list</button>
+        <input type="file" id="bookFile" accept=".xlsx,.xls,.csv" hidden>
+      </div>
+      <p class="note">Customer data stays in this browser (localStorage) — it is deliberately not part of the public app code.</p>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Google Maps API key</h2></div>
+      <p class="note">Enables live-traffic routing, waypoint optimisation and precise geocoding. Stored only in this browser — never uploaded. See the README for the 10-minute setup guide.</p>
+      <div class="form-row"><label>API key</label><input type="password" id="setKey" placeholder="AIza…" autocomplete="off"></div>
+      <div class="form-row"><label>One-time</label>
+        <button class="btn ghost" id="geocodeAll">📍 Geocode entire address book</button>
+        <span class="note" id="geocodeAllStatus"></span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Depot & timings</h2></div>
+      <div class="form-row"><label>Depot address</label><input id="setDepot"></div>
+      <div class="form-grid">
+        <div><label>Vans depart</label><input type="time" id="setDepart"></div>
+        <div><label>Aim back by</label><input type="time" id="setTarget"></div>
+        <div><label>Hard cut-off</label><input type="time" id="setHard"></div>
+        <div><label>Minutes per stop</label><input type="number" id="setService" min="1"></div>
+        <div><label>Traffic leeway %</label><input type="number" id="setLeeway" min="0"></div>
+      </div>
+      <div class="form-grid">
+        <div><label>Van 1 name</label><input id="van1"></div>
+        <div><label>Van 2 name</label><input id="van2"></div>
+        <div><label>Van 3 name</label><input id="van3"></div>
+      </div>
+      <button class="btn primary" id="saveSettings">Save settings</button>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Weekly schedule</h2></div>
+      <p class="note">Which regions are promised on which days. Presets:
+        <label><input type="radio" name="preset" value="current"> Current schedule</label>
+        <label><input type="radio" name="preset" value="proposed"> Proposed (July 2026 analysis)</label>
+        <button class="btn small ghost" id="resetSched">Reset to preset</button>
+      </p>
+      <p class="note" id="customNote" style="display:none">⚠ Custom schedule active (edits below override the preset).</p>
+      <div id="schedGrid" class="sched"></div>
+    </div>
+  </section>
+</main>
+
+<div id="toasts"></div>
+
+<script src="data-regions.js"></script>
+<script src="data-customers.js"></script>
+<script src="optimiser.js"></script>
+<script src="google.js"></script>
+<script src="pdfgen.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
