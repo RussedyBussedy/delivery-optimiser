@@ -97,6 +97,21 @@ input:focus{outline:2px solid #1f5fa833}
 .toast.bad{background:var(--bad)}
 @keyframes pop{from{transform:translateY(8px);opacity:0}}
 
+/* ---- Team sync & key status ---- */
+.pill{font-size:11.5px;font-weight:700;padding:3px 10px;border-radius:12px;background:#e8eef5;color:var(--mut);max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pill.ok{background:#e2f2e8;color:var(--ok)}
+.pill.warn{background:#fdf0dc;color:var(--warn)}
+.pill.bad{background:#fae4e0;color:var(--bad)}
+.okText{color:var(--ok)!important}
+.badText{color:var(--bad)!important}
+textarea{border:1px solid var(--line);border-radius:7px;padding:7px 10px;font:inherit;background:#fff;resize:vertical}
+textarea:focus{outline:2px solid #1f5fa833}
+.form-row textarea{flex:1;min-width:220px}
+
+/* ---- Manual customer form ---- */
+.cust-form{border:1.5px dashed var(--blue);border-radius:10px;padding:10px 14px;margin:6px 0 12px;background:#f7fafd}
+.cust-form>b{color:var(--navy);font-size:13.5px}
+
 @media (max-width:640px){
   header{gap:8px}
   .brand span{display:none}

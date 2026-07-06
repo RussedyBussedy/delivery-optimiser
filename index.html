@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Blind Designs · Delivery Optimiser</title>
-<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="styles.css?v=2">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚚</text></svg>">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -65,8 +65,27 @@
   <!-- ============ ADDRESS BOOK ============ -->
   <section class="page" id="page-book" style="display:none">
     <div class="card">
-      <div class="card-head"><h2>Address book</h2>
-        <input type="search" id="bookSearch" placeholder="Search name, code or area…"></div>
+      <div class="card-head"><h2>Address book <span class="note" id="bookCount"></span></h2>
+        <div>
+          <input type="search" id="bookSearch" placeholder="Search name, code or area…">
+          <button class="btn" id="newCustomerBtn">＋ New customer</button>
+        </div></div>
+      <div id="custForm" class="cust-form" style="display:none">
+        <b id="cfTitle">New customer</b>
+        <div class="form-grid">
+          <div><label>Name *</label><input id="cfName" placeholder="Customer / company name"></div>
+          <div><label>Code</label><input id="cfCode" placeholder="(auto)"></div>
+          <div><label>Phone</label><input id="cfPhone" placeholder="Cell or landline"></div>
+          <div><label>Area</label><select id="cfArea"></select></div>
+        </div>
+        <div class="form-row"><label>Delivery address *</label><input id="cfAddr" placeholder="Unit / street, suburb, city"></div>
+        <div class="form-row">
+          <button class="btn primary" id="cfSave">Save customer</button>
+          <button class="btn" id="cfSaveAdd">Save + add to today's plan</button>
+          <button class="btn ghost" id="cfCancel">Cancel</button>
+          <span class="note" id="cfStatus"></span>
+        </div>
+      </div>
       <div id="bookList"></div>
     </div>
   </section>
@@ -81,17 +100,30 @@
         <button class="btn small ghost" id="clearBook">Remove uploaded list</button>
         <input type="file" id="bookFile" accept=".xlsx,.xls,.csv" hidden>
       </div>
-      <p class="note">Customer data stays in this browser (localStorage) — it is deliberately not part of the public app code.</p>
+      <p class="note">Customer data is kept out of the public app code. It lives in this browser — and is shared with the rest of the team when Team sync (below) is on.</p>
     </div>
 
     <div class="card">
       <div class="card-head"><h2>Google Maps API key</h2></div>
-      <p class="note">Enables live-traffic routing, waypoint optimisation and precise geocoding. Stored only in this browser — never uploaded. See the README for the 10-minute setup guide.</p>
-      <div class="form-row"><label>API key</label><input type="password" id="setKey" placeholder="AIza…" autocomplete="off"></div>
+      <p class="note">Enables live-traffic routing, waypoint optimisation and precise geocoding. See the README for the 10-minute setup guide. With Team sync on, saving the key here applies it for everyone.</p>
+      <div class="form-row"><label>API key</label><input type="password" id="setKey" placeholder="AIza…" autocomplete="off"><button class="mini" id="keyEye" title="Show / hide key">👁</button></div>
+      <p class="note" id="keyTestStatus"></p>
       <div class="form-row"><label>One-time</label>
         <button class="btn ghost" id="geocodeAll">📍 Geocode entire address book</button>
         <button class="btn small ghost" id="clearGeo" title="Forget all cached customer coordinates">Clear cached geocodes</button>
         <span class="note" id="geocodeAllStatus"></span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Team sync</h2><span class="pill" id="syncStatus"></span></div>
+      <p class="note">Shares settings, the Google key, the address book and geocodes with every device automatically — via your own free Firebase project. One person does the one-time setup in the README; everyone else only enters the <b>team code</b>. The code is the password: share it privately.</p>
+      <div class="form-row" id="fbConfigRow"><label>Firebase config</label><textarea id="fbConfig" rows="3" placeholder="Paste the firebaseConfig { … } snippet from the Firebase console (or commit it in firebase-config.js so nobody has to paste it)"></textarea></div>
+      <div class="form-row"><label>Team code</label><input id="teamCode" placeholder="bd-…" autocomplete="off"><button class="mini" id="copyTeamCode" title="Copy team code">⧉</button></div>
+      <div class="form-row">
+        <button class="btn primary" id="connectTeam">Connect</button>
+        <button class="btn ghost" id="createTeam">Create new team</button>
+        <button class="btn small ghost" id="disconnectTeam" style="display:none">Turn off on this device</button>
+      </div>
     </div>
 
     <div class="card">
@@ -127,11 +159,13 @@
 
 <div id="toasts"></div>
 
-<script src="data-regions.js"></script>
-<script src="data-customers.js"></script>
-<script src="optimiser.js"></script>
-<script src="google.js"></script>
-<script src="pdfgen.js"></script>
-<script src="app.js"></script>
+<script src="data-regions.js?v=2"></script>
+<script src="data-customers.js?v=2"></script>
+<script src="optimiser.js?v=2"></script>
+<script src="google.js?v=2"></script>
+<script src="firebase-config.js?v=2"></script>
+<script src="sync.js?v=2"></script>
+<script src="pdfgen.js?v=2"></script>
+<script src="app.js?v=2"></script>
 </body>
 </html>

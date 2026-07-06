@@ -28,7 +28,17 @@
 
   let settings = { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem('bd_settings') || '{}') };
   settings.depot = { ...DEFAULT_SETTINGS.depot, ...(settings.depot || {}) };
-  const saveSettings = () => localStorage.setItem('bd_settings', JSON.stringify(settings));
+  let applyingRemote = false; // true while applying data received from Team sync (prevents echo loops)
+  const saveSettings = () => {
+    localStorage.setItem('bd_settings', JSON.stringify(settings));
+    if (!applyingRemote && window.TeamSync) window.TeamSync.push('settings');
+  };
+  function persistBook() {
+    try { localStorage.setItem('bd_addressbook', JSON.stringify(window.CUSTOMERS)); }
+    catch (e) { toast('Could not save the address book locally: ' + e.message, true); }
+    if (!applyingRemote && window.TeamSync) window.TeamSync.push('addressbook');
+    renderBookStatus();
+  }
 
   const todayISO = () => new Date().toISOString().slice(0, 10);
   let planDate = todayISO();
@@ -207,16 +217,25 @@
         const g = await window.GoogleRouting.geocode(settings.depot.address);
         if (g && !g.suspect) { settings.depot.lat = g.lat; settings.depot.lng = g.lng; settings.depot.geocoded = true; saveSettings(); }
       }
-      let n = 0;
+      let n = 0, fatal = 0;
       for (const s of missing) {
         busy('Geocoding ' + (++n) + '/' + missing.length + ' — ' + s.name);
         if (!s.address) { s.geo = 'none'; continue; }
         const g = await window.GoogleRouting.geocode(s.address, s.area);
         if (g && !g.suspect) {
-          s.lat = g.lat; s.lng = g.lng; s.geo = 'exact';
+          s.lat = g.lat; s.lng = g.lng; s.geo = 'exact'; fatal = 0;
           if (!s.area) s.area = regionOfPoint(s) || s.area;
-        } else if (g) { s.lat = g.lat; s.lng = g.lng; s.geo = 'suspect'; }
-        else s.geo = 'failed';
+        } else if (g) { s.lat = g.lat; s.lng = g.lng; s.geo = 'suspect'; fatal = 0; }
+        else {
+          s.geo = 'failed';
+          const st = window.GoogleRouting.lastStatus;
+          const systemic = st === 'REQUEST_DENIED' || st === 'AUTH_FAILURE' || st === 'OVER_QUERY_LIMIT' ||
+            ((st === 'TIMEOUT' || st === 'JS_ERROR') && ++fatal >= 3);
+          if (systemic) {
+            toast('Geocoding unavailable (' + st + ') — using approximate locations. ' + hintForStatus(st), true);
+            break;
+          }
+        }
       }
     }
     // fallback: approximate by region centroid + deterministic jitter
@@ -439,25 +458,186 @@
   /* ---------------- Address book tab ---------------- */
   function renderBook() {
     const q = ($('#bookSearch').value || '').toLowerCase();
-    const list = window.CUSTOMERS.filter(c => !q || c.name.toLowerCase().includes(q) || c.code.toLowerCase().includes(q) || (c.area || '').toLowerCase().includes(q)).slice(0, 60);
+    const all = window.CUSTOMERS.filter(c => !q || c.name.toLowerCase().includes(q) || c.code.toLowerCase().includes(q) || (c.area || '').toLowerCase().includes(q));
+    const list = all.slice(0, 60);
+    $('#bookCount').textContent = all.length === window.CUSTOMERS.length
+      ? window.CUSTOMERS.length + ' customers' + (all.length > 60 ? ' (showing 60 — search to narrow)' : '')
+      : all.length + ' matches' + (all.length > 60 ? ' (showing 60)' : '');
     $('#bookList').innerHTML = list.map(c => {
       const col = (window.REGIONS[c.area] || {}).color || '#999';
       return '<div class="book-row"><span class="rdot" style="background:' + col + '"></span>' +
         '<div class="s-main"><b>' + esc(c.name) + '</b> <span class="code">' + esc(c.code) + '</span>' +
         (c.freq ? '<span class="badge">' + c.freq + ' deliveries</span>' : '') +
         '<div class="s-addr">' + esc(c.address || 'no address on file') + (c.area ? ' · ' + esc(c.area) : '') + '</div></div>' +
-        '<button class="mini add" data-code="' + esc(c.code) + '">+ Add</button></div>';
+        '<button class="mini add" data-code="' + esc(c.code) + '">+ Add</button>' +
+        '<button class="mini edit" data-code="' + esc(c.code) + '" title="Edit customer">✎</button>' +
+        '<button class="mini del" data-code="' + esc(c.code) + '" title="Remove from address book">✕</button></div>';
     }).join('') || '<div class="empty">No matches.</div>';
     $$('#bookList .add').forEach(b => b.onclick = () => {
       const c = window.CUSTOMERS.find(x => x.code === b.dataset.code);
       if (c) { addStopFromCustomer(c); toast(c.name + ' added to ' + planDate); }
     });
+    $$('#bookList .edit').forEach(b => b.onclick = () => {
+      const c = window.CUSTOMERS.find(x => x.code === b.dataset.code);
+      if (c) openCustForm(c);
+    });
+    $$('#bookList .del').forEach(b => b.onclick = () => {
+      const c = window.CUSTOMERS.find(x => x.code === b.dataset.code);
+      if (!c) return;
+      const team = window.TeamSync && window.TeamSync.state().teamId;
+      if (!confirm('Remove ' + c.name + ' from the address book' + (team ? ' for the whole team' : '') + '?')) return;
+      window.CUSTOMERS = window.CUSTOMERS.filter(x => x.code !== c.code);
+      persistBook(); renderBook();
+      toast(c.name + ' removed from the address book');
+    });
+  }
+
+  /* ---------------- Manual customer add / edit ---------------- */
+  let editingCode = null;
+  function openCustForm(c) {
+    editingCode = c ? c.code : null;
+    $('#cfTitle').textContent = c ? 'Edit customer — ' + c.name : 'New customer';
+    $('#custForm').style.display = '';
+    $('#cfName').value = c ? c.name : '';
+    $('#cfCode').value = c ? c.code : '';
+    $('#cfCode').disabled = !!c;
+    $('#cfPhone').value = c ? (c.cell || c.tel || '') : '';
+    $('#cfAddr').value = c ? c.address : '';
+    const cur = c ? c.area : '';
+    let opts = '<option value="">(auto from address)</option>' +
+      Object.keys(window.REGIONS).map(r => '<option value="' + esc(r) + '"' + (cur === r ? ' selected' : '') + '>' + esc(r) + '</option>').join('');
+    if (cur && !window.REGIONS[cur]) opts += '<option value="' + esc(cur) + '" selected>' + esc(cur) + '</option>';
+    $('#cfArea').innerHTML = opts;
+    $('#cfStatus').textContent = '';
+    $('#cfName').focus();
+  }
+  function closeCustForm() { $('#custForm').style.display = 'none'; editingCode = null; }
+
+  async function saveCustForm(alsoAdd) {
+    const name = $('#cfName').value.trim();
+    const addr = cleanAddr($('#cfAddr').value);
+    if (!name || !addr) { toast('Name and delivery address are both required', true); return; }
+    let rec = editingCode ? window.CUSTOMERS.find(x => x.code === editingCode) : null;
+    if (!rec) {
+      let code = ($('#cfCode').value || '').trim() || ('MAN-' + Date.now().toString(36).toUpperCase());
+      if (window.CUSTOMERS.some(x => x.code === code)) { toast('Customer code "' + code + '" already exists — pick another', true); return; }
+      rec = { code, name: '', area: '', address: '', contact: '', tel: '', cell: '', freq: 0 };
+      window.CUSTOMERS.unshift(rec);
+    }
+    const oldAddr = rec.address;
+    rec.name = name;
+    rec.address = addr;
+    rec.cell = $('#cfPhone').value.trim();
+    rec.area = $('#cfArea').value || rec.area || '';
+    const areaWasAuto = !$('#cfArea').value;
+    const wasEdit = !!editingCode;
+    // save immediately — geocoding happens in the background
+    persistBook();
+    closeCustForm();
+    renderBook();
+    toast((wasEdit ? 'Customer updated: ' : 'Customer added: ') + name +
+      (window.TeamSync && window.TeamSync.state().teamId ? ' (synced to team)' : ''));
+    if (alsoAdd) {
+      // refresh any matching stop already on the plan, else add
+      const existing = day.stops.find(s => s.code === rec.code);
+      if (existing) {
+        existing.name = rec.name; existing.address = rec.address; existing.area = rec.area;
+        const cached = window.GoogleRouting.cachedCoords(rec.address);
+        existing.lat = cached ? cached.lat : undefined; existing.lng = cached ? cached.lng : undefined;
+        existing.geo = cached ? 'exact' : 'none';
+        day.result = null; saveDay(); renderPlan();
+        toast(rec.name + ' updated on ' + planDate);
+      } else addStopFromCustomer(rec);
+      switchTab('plan');
+    }
+    // background: pin the address on the map so routing is precise
+    if (settings.apiKey) {
+      (async () => {
+        try {
+          await window.GoogleRouting.loadApi(settings.apiKey);
+          const g = await window.GoogleRouting.geocode(addr, rec.area, addr !== oldAddr);
+          if (g && !g.suspect) {
+            if (areaWasAuto) {
+              const region = regionOfPoint({ lat: g.lat, lng: g.lng });
+              if (region && region !== rec.area) { rec.area = region; persistBook(); }
+            }
+            // update today's stop for this customer, if any
+            const st = day.stops.find(s => s.code === rec.code);
+            if (st) { st.lat = g.lat; st.lng = g.lng; st.geo = 'exact'; st.area = rec.area || st.area; saveDay(); }
+            renderPlan();
+            if ($('#page-book').style.display !== 'none') renderBook();
+            toast('Address located ✓' + (g.formatted ? ' — ' + g.formatted : ''));
+          } else {
+            toast('Could not pinpoint "' + name + '" (' + window.GoogleRouting.lastStatus + ') — an approximate position will be used; check the address', true);
+          }
+        } catch (e) { toast('Could not geocode ' + name + ': ' + e.message, true); }
+      })();
+    }
   }
 
   /* ---------------- Settings tab ---------------- */
+  function updateKeyBanner() {
+    $('#keyNudge').style.display = settings.apiKey ? 'none' : '';
+  }
+  function hintForStatus(st) {
+    switch (st) {
+      case 'REQUEST_DENIED': return 'Usually the Geocoding API isn\'t enabled for this key, billing isn\'t linked, or the key\'s website restriction blocks ' + location.origin + '.';
+      case 'AUTH_FAILURE': return 'Google rejected the key — check the key value and that its website restriction includes ' + location.origin + '/*.';
+      case 'OVER_QUERY_LIMIT': case 'RESOURCE_EXHAUSTED': return 'Google\'s rate/quota limit hit — wait a minute and try again.';
+      case 'TIMEOUT': return 'No answer from Google — check your internet connection or ad-blocker.';
+      case 'ZERO_RESULTS': return 'Google couldn\'t find that address.';
+      case 'JS_ERROR': return 'The Maps library didn\'t load properly — reload the page.';
+      default: return '';
+    }
+  }
+  async function testKey() {
+    const S = $('#keyTestStatus');
+    S.textContent = 'Testing key against Google…'; S.className = 'note';
+    try {
+      await window.GoogleRouting.loadApi(settings.apiKey);
+      const g = await window.GoogleRouting.geocode(settings.depot.address, null, true); // force = bypass cache
+      if (g) {
+        if (!g.suspect) { settings.depot.lat = g.lat; settings.depot.lng = g.lng; settings.depot.geocoded = true; saveSettings(); }
+        S.textContent = '✓ Key working — live traffic and precise geocoding are ON.'; S.className = 'note okText';
+        toast('Google Maps key OK ✓');
+      } else {
+        const st = window.GoogleRouting.lastStatus;
+        S.textContent = '✗ Maps loaded but geocoding failed (' + st + '). ' + hintForStatus(st); S.className = 'note badText';
+        toast('Geocoding test failed: ' + st, true);
+      }
+    } catch (e) {
+      S.textContent = '✗ ' + e.message + ' ' + hintForStatus(window.GoogleRouting.lastStatus); S.className = 'note badText';
+      toast(e.message, true);
+    }
+  }
+  function renderSyncStatus() {
+    if (!window.TeamSync) return;
+    const st = window.TeamSync.state();
+    const el = $('#syncStatus');
+    let cls = '', txt;
+    if (st.status === 'on') { cls = 'ok'; txt = 'Synced ✓' + (st.lastSync ? ' · ' + st.lastSync.toTimeString().slice(0, 5) : ''); }
+    else if (st.status === 'connecting') { cls = 'warn'; txt = 'Connecting…'; }
+    else if (st.status === 'error') { cls = 'bad'; txt = st.statusMsg || 'Sync error'; }
+    else txt = st.hasConfig ? 'Not connected' : 'Not set up';
+    el.className = 'pill ' + cls; el.textContent = txt;
+    $('#disconnectTeam').style.display = st.teamId ? '' : 'none';
+  }
+
   function renderSettings() {
     renderBookStatus();
     $('#setKey').value = settings.apiKey;
+    if (!$('#keyTestStatus').textContent) {
+      $('#keyTestStatus').textContent = settings.apiKey
+        ? 'Key saved (ends …' + settings.apiKey.slice(-4) + '). Press "Save settings" to re-test it.'
+        : '';
+    }
+    if (window.TeamSync) {
+      const st = window.TeamSync.state();
+      $('#fbConfigRow').style.display = st.baked ? 'none' : '';
+      if (!st.baked && st.hasConfig && !$('#fbConfig').value) $('#fbConfig').placeholder = 'Config saved on this device ✓ — paste a new one to replace it';
+      if (st.teamId) $('#teamCode').value = st.teamId;
+      renderSyncStatus();
+    }
     $('#setDepot').value = settings.depot.address;
     $('#setDepart').value = settings.departTime;
     $('#setTarget').value = settings.targetReturn;
@@ -485,7 +665,9 @@
   }
 
   function wireSettings() {
+    $('#keyEye').onclick = () => { const k = $('#setKey'); k.type = k.type === 'password' ? 'text' : 'password'; };
     $('#saveSettings').onclick = async () => {
+      const prevKey = settings.apiKey;
       settings.apiKey = $('#setKey').value.trim();
       const newDepot = $('#setDepot').value.trim();
       if (newDepot !== settings.depot.address) settings.depot = { address: newDepot, lat: settings.depot.lat, lng: settings.depot.lng, geocoded: false };
@@ -495,33 +677,125 @@
       settings.serviceMin = Math.max(1, +$('#setService').value || 15);
       settings.leewayPct = Math.max(0, +$('#setLeeway').value || 12);
       settings.vanNames = [$('#van1').value || 'Van 1', $('#van2').value || 'Van 2', $('#van3').value || 'Van 3 (overflow)'];
-      saveSettings(); toast('Settings saved');
-      if (settings.apiKey) {
-        try { await window.GoogleRouting.loadApi(settings.apiKey); toast('Google Maps key OK ✓'); }
-        catch (e) { toast(e.message, true); }
-      }
+      saveSettings(); updateKeyBanner(); toast('Settings saved');
       renderPlan();
+      // Google's Maps script can only load one key per page — swap keys via a quick reload
+      if (settings.apiKey && settings.apiKey !== prevKey && window.GoogleRouting.isLoaded) {
+        $('#keyTestStatus').textContent = 'New key saved — reloading to apply it…';
+        setTimeout(() => location.reload(), 1200);
+        return;
+      }
+      if (settings.apiKey) testKey();
+      else $('#keyTestStatus').textContent = '';
     };
     $$('input[name=preset]').forEach(r => r.onchange = () => {
       settings.schedulePreset = r.value; settings.scheduleCustom = null; saveSettings(); renderSettings();
       day.areas = null; saveDay(); renderPlan();
     });
     $('#resetSched').onclick = () => { settings.scheduleCustom = null; saveSettings(); renderSettings(); day.areas = null; saveDay(); renderPlan(); };
-    $('#clearGeo').onclick = () => { localStorage.removeItem('bd_geocache_v1'); toast('Geocode cache cleared'); };
+    $('#clearGeo').onclick = () => {
+      const team = window.TeamSync && window.TeamSync.state().teamId;
+      if (!confirm(team
+        ? 'Clear cached geocodes for the WHOLE TEAM? Every address will need geocoding again.'
+        : 'Clear cached geocodes on this device?')) return;
+      window.GoogleRouting.clearCache();
+      if (team) window.TeamSync.clearGeoTeam();
+      toast('Geocode cache cleared');
+    };
+
+    /* -------- Geocode entire address book: resumable, stoppable, can't hang -------- */
+    let geoRun = null;
     $('#geocodeAll').onclick = async () => {
-      if (!settings.apiKey) { toast('Add a Google API key first', true); return; }
+      const btn = $('#geocodeAll'), S = $('#geocodeAllStatus');
+      if (geoRun) { geoRun.cancel = true; btn.textContent = 'Stopping…'; return; }
+      if (!settings.apiKey) { toast('Add and save a Google API key first', true); return; }
+      geoRun = { cancel: false };
+      btn.textContent = '⏹ Stop';
       try {
         await window.GoogleRouting.loadApi(settings.apiKey);
         const withAddr = window.CUSTOMERS.filter(c => c.address);
-        let n = 0, ok = 0;
-        for (const c of withAddr) {
-          $('#geocodeAllStatus').textContent = 'Geocoding ' + (++n) + '/' + withAddr.length + '…';
-          if (window.GoogleRouting.cachedCoords(c.address)) { ok++; continue; }
-          const g = await window.GoogleRouting.geocode(c.address, c.area);
-          if (g && !g.suspect) ok++;
+        const todo = withAddr.filter(c => !window.GoogleRouting.cachedCoords(c.address));
+        const cachedN = withAddr.length - todo.length;
+        if (!todo.length) {
+          S.textContent = 'All ' + withAddr.length + ' addresses are already geocoded ✓';
+        } else {
+          let ok = 0, fail = 0, fatal = null, consecTO = 0, i = 0;
+          for (const c of todo) {
+            if (geoRun.cancel) break;
+            i++;
+            S.textContent = 'Geocoding ' + i + '/' + todo.length + ' — ' + c.name + (cachedN ? ' (' + cachedN + ' already cached)' : '');
+            let g = await window.GoogleRouting.geocode(c.address, c.area);
+            let st = window.GoogleRouting.lastStatus;
+            if (!g && st === 'OVER_QUERY_LIMIT') { // back off once, then give up cleanly
+              await new Promise(r => setTimeout(r, 2500));
+              g = await window.GoogleRouting.geocode(c.address, c.area);
+              st = window.GoogleRouting.lastStatus;
+            }
+            if (g && !g.suspect) { ok++; consecTO = 0; }
+            else {
+              fail++;
+              if (st === 'REQUEST_DENIED' || st === 'AUTH_FAILURE' || st === 'OVER_QUERY_LIMIT') { fatal = st; break; }
+              if (st === 'TIMEOUT' || st === 'JS_ERROR') { if (++consecTO >= 3) { fatal = st; break; } }
+              else consecTO = 0;
+            }
+          }
+          const total = cachedN + ok;
+          if (fatal) {
+            S.textContent = '⚠ Stopped at ' + i + '/' + todo.length + ' (' + fatal + '). ' + hintForStatus(fatal) + ' Progress so far is saved — run again once fixed.';
+            toast('Geocoding stopped: ' + fatal, true);
+          } else if (geoRun.cancel) {
+            S.textContent = 'Stopped — ' + total + '/' + withAddr.length + ' addresses cached. Run again any time to continue.';
+          } else {
+            S.textContent = 'Done — ' + total + '/' + withAddr.length + ' geocoded' + (fail ? ', ' + fail + ' failed (check those addresses)' : '') +
+              (window.TeamSync && window.TeamSync.state().teamId ? '. Shared with the team ✓' : '. Cached on this device.');
+            toast('Geocoding complete');
+          }
         }
-        $('#geocodeAllStatus').textContent = 'Done — ' + ok + '/' + withAddr.length + ' geocoded & cached on this device.';
-      } catch (e) { toast(e.message, true); }
+        if (window.TeamSync) window.TeamSync.push('geocache');
+      } catch (e) {
+        S.textContent = '⚠ ' + e.message; toast(e.message, true);
+      } finally {
+        geoRun = null; btn.textContent = '📍 Geocode entire address book';
+      }
+    };
+
+    /* -------- Team sync -------- */
+    if (window.TeamSync) wireSync();
+  }
+
+  function wireSync() {
+    const maybeSaveConfig = () => {
+      const t = $('#fbConfig');
+      if ($('#fbConfigRow').style.display !== 'none' && t.value.trim()) {
+        window.TeamSync.saveConfigText(t.value);
+        t.value = ''; t.placeholder = 'Config saved on this device ✓ — paste a new one to replace it';
+      }
+    };
+    $('#connectTeam').onclick = async () => {
+      try {
+        maybeSaveConfig();
+        await window.TeamSync.connect($('#teamCode').value);
+        toast('Connected — team data is syncing ✓');
+      } catch (e) { toast(e.message, true); renderSyncStatus(); }
+    };
+    $('#createTeam').onclick = async () => {
+      try {
+        maybeSaveConfig();
+        const code = await window.TeamSync.createTeam();
+        $('#teamCode').value = code;
+        toast('Team created ✓ — copy the team code and share it privately with the team');
+      } catch (e) { toast(e.message, true); renderSyncStatus(); }
+    };
+    $('#disconnectTeam').onclick = () => {
+      window.TeamSync.disconnect();
+      toast('Sync turned off on this device (data stays in the cloud for the team)');
+      renderSyncStatus();
+    };
+    $('#copyTeamCode').onclick = async () => {
+      const v = $('#teamCode').value.trim();
+      if (!v) return;
+      try { await navigator.clipboard.writeText(v); toast('Team code copied'); }
+      catch (e) { $('#teamCode').select(); document.execCommand('copy'); toast('Team code copied'); }
     };
   }
 
@@ -556,9 +830,10 @@
           freq: 0
         }));
         if (!list.length) { toast('No customer rows found in "' + sheetName + '"', true); return; }
-        localStorage.setItem('bd_addressbook', JSON.stringify(list));
         window.CUSTOMERS = list;
-        toast('Address book loaded: ' + list.length + ' customers (sheet: ' + sheetName + ') - stored on this device only');
+        persistBook();
+        toast('Address book loaded: ' + list.length + ' customers (sheet: ' + sheetName + ')' +
+          (window.TeamSync && window.TeamSync.state().teamId ? ' — synced to the team ✓' : ' — stored on this device'));
         renderSettings(); renderBook();
       } catch (err) { console.error(err); toast('Could not read that file: ' + err.message, true); }
     };
@@ -567,8 +842,9 @@
 
   function renderBookStatus() {
     const stored = !!localStorage.getItem('bd_addressbook');
+    const synced = window.TeamSync && window.TeamSync.state().teamId;
     $('#bookStatus').innerHTML = window.CUSTOMERS.length
-      ? '&#10003; <b>' + window.CUSTOMERS.length + '</b> customers loaded (' + (stored ? 'uploaded - stored in this browser' : 'bundled file') + ')'
+      ? '&#10003; <b>' + window.CUSTOMERS.length + '</b> customers loaded (' + (synced ? 'synced with the team' : stored ? 'stored in this browser' : 'bundled file') + ') · <b>' + window.GoogleRouting.cacheSize() + '</b> addresses geocoded'
       : '<span style="color:var(--bad)">No address book loaded.</span> Upload your customer list (Excel with Code / Name / Geo Area / Delivery Address / Tel / Cell columns - the "Customer addresses" tab of your deliveries export works as-is). Order imports still work without it.';
   }
 
@@ -593,10 +869,69 @@
     $('#bookSearch').oninput = renderBook;
     $('#bookFileBtn').onclick = () => $('#bookFile').click();
     $('#bookFile').onchange = e => { if (e.target.files[0]) parseAddressBook(e.target.files[0]); e.target.value = ''; };
-    $('#clearBook').onclick = () => { localStorage.removeItem('bd_addressbook'); toast('Uploaded address book removed - reload the page'); };
+    $('#clearBook').onclick = () => {
+      localStorage.removeItem('bd_addressbook');
+      const synced = window.TeamSync && window.TeamSync.state().teamId;
+      toast('Uploaded address book removed on this device — reload the page' + (synced ? ' (the team copy will download again while sync is on)' : ''));
+    };
+    $('#newCustomerBtn').onclick = () => openCustForm(null);
+    $('#cfCancel').onclick = closeCustForm;
+    $('#cfSave').onclick = () => saveCustForm(false);
+    $('#cfSaveAdd').onclick = () => saveCustForm(true);
     wireSettings();
-    if (!settings.apiKey) $('#keyNudge').style.display = '';
+    updateKeyBanner();
     $('#keyNudgeBtn').onclick = () => switchTab('settings');
+
+    /* ---- Team sync: register what gets shared + how it lands ---- */
+    if (window.TeamSync) {
+      window.TeamSync.register('settings', {
+        provide: () => settings,
+        apply: (s, meta) => {
+          if (!s) return;
+          applyingRemote = true;
+          try {
+            settings = { ...DEFAULT_SETTINGS, ...s };
+            settings.depot = { ...DEFAULT_SETTINGS.depot, ...(s.depot || {}) };
+            localStorage.setItem('bd_settings', JSON.stringify(settings));
+            updateKeyBanner(); renderPlan();
+            if ($('#page-settings').style.display !== 'none') renderSettings();
+            if (!meta.first) toast('Settings updated from team sync');
+          } finally { applyingRemote = false; }
+        }
+      });
+      window.TeamSync.register('addressbook', {
+        provide: () => ({ customers: window.CUSTOMERS }),
+        apply: (d, meta) => {
+          const list = (d && d.customers) || [];
+          if (!list.length) return;
+          applyingRemote = true;
+          try {
+            window.CUSTOMERS = list;
+            localStorage.setItem('bd_addressbook', JSON.stringify(list));
+            if ($('#page-book').style.display !== 'none') renderBook();
+            renderBookStatus();
+            if (!meta.first) toast('Address book updated from team sync (' + list.length + ' customers)');
+          } finally { applyingRemote = false; }
+        }
+      });
+      window.TeamSync.register('geocache', {
+        provide: () => ({ cache: window.GoogleRouting.exportCache() }),
+        apply: d => {
+          if (!d) return;
+          if (d.replace) window.GoogleRouting.replaceCache(d.cache || {});
+          else window.GoogleRouting.importCache(d.cache || {});
+          renderBookStatus();
+        }
+      });
+      window.GoogleRouting.onCacheChange = () => { if (!applyingRemote) window.TeamSync.push('geocache'); };
+      window.TeamSync.on('status', renderSyncStatus);
+      window.TeamSync.autoConnect();
+    }
+    document.addEventListener('gmaps-auth-failure', () => {
+      toast('Google rejected the Maps key for this site — check the key and its website restrictions.', true);
+      $('#keyTestStatus').textContent = '✗ AUTH_FAILURE. ' + hintForStatus('AUTH_FAILURE');
+      $('#keyTestStatus').className = 'note badText';
+    });
     renderPlan();
   }
   document.addEventListener('DOMContentLoaded', init);

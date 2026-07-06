@@ -1,0 +1,14 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // All app data lives at /teams/{teamId}/data/{doc}.
+    // The teamId is a long random secret shared privately with staff —
+    // treat it like a password. Listing is disabled so codes can't be
+    // discovered; without the code, nothing can be read or written.
+    match /teams/{teamId}/data/{doc} {
+      allow get, create, update: if true;
+      allow delete: if false;
+      allow list: if false;
+    }
+  }
+}
