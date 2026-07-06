@@ -442,13 +442,63 @@
     $$('#result .pdf').forEach(b => b.onclick = () => downloadVanPdf(+b.dataset.van));
   }
 
-  function downloadVanPdf(vi) {
+  /* Sequence label for map pins: 1-9 then A-Z (static maps allow one char) */
+  const pinLabel = i => i < 9 ? String(i + 1) : (i < 35 ? String.fromCharCode(65 + i - 9) : '');
+
+  /* Build a Google Static Maps route image (depot + numbered stops + path).
+     Returns { dataUrl, legend } or null (missing key/coords, API not enabled…). */
+  async function buildRouteMap(orderedStops, vanColor) {
+    if (!settings.apiKey) return null;
+    const pts = orderedStops.filter(s => s.lat != null && s.lng != null);
+    if (pts.length < 1 || settings.depot.lat == null) return null;
+    const col = (vanColor || '#1f5fa8').replace('#', '0x');
+    const r5 = n => Math.round(n * 1e5) / 1e5;
+    const depot = r5(settings.depot.lat) + ',' + r5(settings.depot.lng);
+    const parts = [
+      'size=640x360', 'scale=2', 'maptype=roadmap', 'language=en', 'region=ZA',
+      'markers=' + encodeURIComponent('size:mid|color:0x222222|label:D|' + depot)
+    ];
+    pts.forEach((s, i) => {
+      const lab = pinLabel(orderedStops.indexOf(s));
+      parts.push('markers=' + encodeURIComponent('size:mid|color:' + col + (lab ? '|label:' + lab : '') + '|' + r5(s.lat) + ',' + r5(s.lng)));
+    });
+    parts.push('path=' + encodeURIComponent('color:' + col + 'CC|weight:3|' + depot + '|' + pts.map(s => r5(s.lat) + ',' + r5(s.lng)).join('|') + '|' + depot));
+    parts.push('key=' + encodeURIComponent(settings.apiKey));
+    const url = 'https://maps.googleapis.com/maps/api/staticmap?' + parts.join('&');
+    if (url.length > 8100) return null; // static maps URL limit
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const blob = await res.blob();
+      if (!blob.type.startsWith('image')) throw new Error('not an image');
+      const dataUrl = await new Promise((ok, bad) => {
+        const fr = new FileReader();
+        fr.onload = () => ok(fr.result); fr.onerror = bad;
+        fr.readAsDataURL(blob);
+      });
+      let legend = 'Map pins match the stop numbers below · D = depot.';
+      if (orderedStops.length > 9) legend += ' Pins A, B, C… = stops 10, 11, 12…';
+      if (pts.length < orderedStops.length) legend += ' (' + (orderedStops.length - pts.length) + ' stop(s) without a precise location are not shown.)';
+      return { dataUrl, legend };
+    } catch (e) {
+      console.warn('Static map failed:', e);
+      toast('Route map unavailable — enable the "Maps Static API" for your Google key (PDF still generated)', true);
+      return null;
+    }
+  }
+
+  async function downloadVanPdf(vi) {
     const v = day.result.vans[vi];
     const stopsById = Object.fromEntries(day.stops.map(s => [s.id, s]));
     const ordered = v.stopIds.map(id => stopsById[id]).filter(Boolean);
     const seq = ordered.map((s, i) => ({ stop: s, eta: new Date(v.tl.etas[i]) }));
+    let map = null;
+    try {
+      busy('Building route map…');
+      map = await buildRouteMap(ordered, v.color);
+    } finally { busy(false); $('#optStatus').textContent = ''; }
     window.PdfGen.vanPdf({
-      name: v.name, color: v.color, stops: ordered, links: v.links,
+      name: v.name, color: v.color, stops: ordered, links: v.links, map,
       timeline: { seq, driveMin: v.tl.driveMin, km: v.tl.km, returnAt: new Date(v.tl.returnAt), returnBy: new Date(v.tl.returnBy) }
     }, { date: planDate, departTime: settings.departTime, leewayPct: settings.leewayPct, hardReturn: settings.hardReturn, serviceMin: settings.serviceMin });
   }

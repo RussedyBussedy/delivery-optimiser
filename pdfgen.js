@@ -55,7 +55,22 @@
     doc.setFont('helvetica', 'italic'); doc.setFontSize(7.8); doc.setTextColor(110, 110, 110);
     doc.text('"Aim to be back by" includes ' + settings.leewayPct + '% traffic leeway on top of the routed estimate. Load for tomorrow on return — latest ' + settings.hardReturn + '.', M, 35);
 
-    // Stops table
+    // Route map (optional — supplied when the Maps Static API is available)
+    let tableStart = 38;
+    if (van.map && van.map.dataUrl) {
+      const mw = W - 2 * M;              // 186 mm wide
+      const mh = mw * 360 / 640;         // keep 640x360 aspect ≈ 104.6 mm
+      try {
+        doc.addImage(van.map.dataUrl, 'PNG', M, 37.5, mw, mh);
+        doc.setDrawColor(rgb[0], rgb[1], rgb[2]); doc.setLineWidth(0.4);
+        doc.rect(M, 37.5, mw, mh);       // neat border in van colour
+        doc.setFont('helvetica', 'italic'); doc.setFontSize(7.2); doc.setTextColor(110, 110, 110);
+        doc.text(van.map.legend || 'Map pins match the stop numbers below.', M, 37.5 + mh + 3.6);
+        tableStart = 37.5 + mh + 6.5;
+      } catch (e) { console.warn('map embed failed', e); tableStart = 38; }
+    }
+
+    // Stops table — rows are in exact delivery order (# = drive sequence)
     const body = tl.seq.map((leg, i) => {
       const s = leg.stop;
       return [
@@ -68,7 +83,7 @@
       ];
     });
     doc.autoTable({
-      startY: 38,
+      startY: tableStart,
       head: [['#', 'ETA', 'Customer / phone', 'Address', 'Orders', 'Delivered  (sign)']],
       body,
       margin: { left: M, right: M, top: 38, bottom: 26 },
