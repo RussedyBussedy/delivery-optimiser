@@ -171,9 +171,14 @@
     return { seq, driveMin, serviceMin: settings.serviceMin * order.length, km, returnAt, returnBy, departAt: dep };
   }
 
-  /* ---------- Google Maps navigation links (9 waypoints per leg) ---------- */
+  /* ---------- Google Maps navigation links (9 waypoints per leg) ----------
+     Leg 1 omits the origin: Google Maps then starts from the driver's
+     CURRENT location (they're at the depot) and offers turn-by-turn
+     navigation instead of a fixed A-to-B route preview.                  */
   function mapsLinks(depot, orderedStops) {
     const pt = p => p.lat.toFixed(6) + ',' + p.lng.toFixed(6);
+    // route home to the depot ADDRESS (clearer in Maps than raw coordinates)
+    const depotDest = depot.address ? encodeURIComponent(depot.address) : pt(depot);
     const links = [];
     const pts = [depot, ...orderedStops.map(x => x), depot];
     // each link: origin + up to 9 waypoints + destination (11 points max)
@@ -181,8 +186,10 @@
     while (i < pts.length - 1) {
       const chunk = pts.slice(i, Math.min(i + 11, pts.length));
       const origin = chunk[0], dest = chunk[chunk.length - 1], way = chunk.slice(1, -1);
-      links.push('https://www.google.com/maps/dir/?api=1&travelmode=driving'
-        + '&origin=' + pt(origin) + '&destination=' + pt(dest)
+      const destParam = dest === depot ? depotDest : pt(dest);
+      links.push('https://www.google.com/maps/dir/?api=1&travelmode=driving&dir_action=navigate'
+        + (i === 0 ? '' : '&origin=' + pt(origin))   // leg 1: start from wherever the driver is
+        + '&destination=' + destParam
         + (way.length ? '&waypoints=' + way.map(pt).join('%7C') : ''));
       i += 10;
     }
