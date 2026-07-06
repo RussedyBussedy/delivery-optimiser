@@ -28,8 +28,24 @@
 
   let settings = { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem('bd_settings') || '{}') };
   settings.depot = { ...DEFAULT_SETTINGS.depot, ...(settings.depot || {}) };
+
+  /* The depot is HARD-PINNED. Whenever the depot address is our Ivanseth Rd
+     building (any spelling), snap to the verified coordinates & canonical
+     address — geocoding is never allowed to move the depot.               */
+  const DEPOT_PIN = { address: '14 Ivanseth Rd, Reuven, Johannesburg, 2091', lat: -26.2348178, lng: 28.0298321 };
+  function enforceDepot() {
+    if (/ivanseth/i.test(settings.depot.address || '')) {
+      settings.depot.address = DEPOT_PIN.address;
+      settings.depot.lat = DEPOT_PIN.lat;
+      settings.depot.lng = DEPOT_PIN.lng;
+      settings.depot.geocoded = true;
+    }
+  }
+  enforceDepot();
+
   let applyingRemote = false; // true while applying data received from Team sync (prevents echo loops)
   const saveSettings = () => {
+    enforceDepot();
     localStorage.setItem('bd_settings', JSON.stringify(settings));
     if (!applyingRemote && window.TeamSync) window.TeamSync.push('settings');
   };
@@ -400,6 +416,7 @@
       '<span class="ret ' + late + '">back ' + fmtT(v.tl.returnAt) + ' → aim ' + fmtT(v.tl.returnBy) + '</span></div>' +
       rows +
       '<div class="van-actions"><button class="btn small pdf" data-van="' + vi + '">📄 Delivery sheet (PDF)</button>' +
+      '<button class="btn small ghost share" data-van="' + vi + '" title="Send the updated route + navigation link to the driver (WhatsApp etc.) — use after adding a stop mid-route">📤 Send route to driver</button>' +
       v.links.map((l, i) => '<a class="btn small ghost" target="_blank" rel="noopener" href="' + l + '">🗺 Maps' + (v.links.length > 1 ? ' leg ' + (i + 1) : '') + '</a>').join('') +
       '</div></div>';
   }
@@ -440,6 +457,33 @@
       saveDay(); renderPlan();
     });
     $$('#result .pdf').forEach(b => b.onclick = () => downloadVanPdf(+b.dataset.van));
+    $$('#result .share').forEach(b => b.onclick = () => shareVanRoute(+b.dataset.van));
+  }
+
+  /* Send the (remaining) route to a driver — for mid-route additions.
+     The navigation link has no fixed origin, so it starts from wherever
+     the driver is when they tap it.                                     */
+  async function shareVanRoute(vi) {
+    const v = day.result.vans[vi];
+    const stopsById = Object.fromEntries(day.stops.map(s => [s.id, s]));
+    const lines = ['Blind Designs — ' + v.name + ' · ' + planDate];
+    let n = 0;
+    v.stopIds.forEach((id, i) => {
+      const s = stopsById[id];
+      if (!s || s.done) return;
+      n++;
+      lines.push(n + '. ~' + fmtT(v.tl.etas[i]) + '  ' + s.name + ' — ' + (s.address || '') + (s.phone ? ' (' + s.phone + ')' : ''));
+    });
+    if (!n) { toast('All stops on this van are already ticked off', true); return; }
+    (v.links || []).forEach((l, i) => lines.push((v.links.length > 1 ? 'Navigate leg ' + (i + 1) + ': ' : 'Tap to navigate: ') + l));
+    lines.push('(Link starts from wherever you are now.)');
+    const text = lines.join('\n');
+    if (navigator.share) {
+      try { await navigator.share({ text }); return; }
+      catch (e) { if (e && e.name === 'AbortError') return; }
+    }
+    try { await navigator.clipboard.writeText(text); toast('Route copied ✓ — paste it to the driver on WhatsApp'); }
+    catch (e) { window.prompt('Copy the route text below:', text); }
   }
 
   /* Sequence label for map pins: 1-9 then A-Z (static maps allow one char) */
@@ -515,9 +559,14 @@
       : all.length + ' matches' + (all.length > 60 ? ' (showing 60)' : '');
     $('#bookList').innerHTML = list.map(c => {
       const col = (window.REGIONS[c.area] || {}).color || '#999';
+      const q = c.address ? window.GoogleRouting.getQuality(c.address) : null;
+      const qBadge =
+        q === 'partial' ? '<span class="badge warn" title="Google could not match this address exactly — verify it">⚠ check address</span>' :
+        q === 'suspect' ? '<span class="badge bad" title="Pinned outside the delivery area — address probably wrong">⚠ outside area</span>' :
+        q === 'failed' ? '<span class="badge bad" title="Google cannot find this address">✗ not found</span>' : '';
       return '<div class="book-row"><span class="rdot" style="background:' + col + '"></span>' +
         '<div class="s-main"><b>' + esc(c.name) + '</b> <span class="code">' + esc(c.code) + '</span>' +
-        (c.freq ? '<span class="badge">' + c.freq + ' deliveries</span>' : '') +
+        (c.freq ? '<span class="badge">' + c.freq + ' deliveries</span>' : '') + qBadge +
         '<div class="s-addr">' + esc(c.address || 'no address on file') + (c.area ? ' · ' + esc(c.area) : '') + '</div></div>' +
         '<button class="mini add" data-code="' + esc(c.code) + '">+ Add</button>' +
         '<button class="mini edit" data-code="' + esc(c.code) + '" title="Edit customer">✎</button>' +
@@ -809,8 +858,72 @@
       }
     };
 
+    /* -------- Address veracity check: grade every address against Google -------- */
+    let checkRun = null;
+    $('#checkAddr').onclick = async () => {
+      const btn = $('#checkAddr'), R = $('#addrReport');
+      if (checkRun) { checkRun.cancel = true; btn.textContent = 'Stopping…'; return; }
+      if (!settings.apiKey) { toast('Add and save a Google API key first', true); return; }
+      checkRun = { cancel: false };
+      btn.textContent = '⏹ Stop check';
+      R.style.display = '';
+      R.innerHTML = '<p class="note" id="arProgress">Checking every address against Google…</p>';
+      const buckets = { missing: [], failed: [], suspect: [], partial: [], exact: [], unknown: [] };
+      let fatal = null, i = 0;
+      try {
+        await window.GoogleRouting.loadApi(settings.apiKey);
+        for (const c of window.CUSTOMERS) {
+          if (checkRun.cancel) break;
+          i++;
+          if (!c.address) { buckets.missing.push(c); continue; }
+          let q = window.GoogleRouting.getQuality(c.address);
+          if (!q) { // not graded on this device yet — verify live (also re-grades old cached entries)
+            const el = $('#arProgress');
+            if (el) el.textContent = 'Checking ' + i + '/' + window.CUSTOMERS.length + ' — ' + c.name;
+            await window.GoogleRouting.geocode(c.address, c.area, true);
+            const st = window.GoogleRouting.lastStatus;
+            if (st === 'REQUEST_DENIED' || st === 'AUTH_FAILURE' || st === 'OVER_QUERY_LIMIT') { fatal = st; break; }
+            q = window.GoogleRouting.getQuality(c.address);
+          }
+          (buckets[q] || buckets.unknown).push(c);
+        }
+        R.innerHTML = renderAddrReport(buckets, i, window.CUSTOMERS.length, fatal, checkRun.cancel);
+        if (window.TeamSync) window.TeamSync.push('geocache');
+        renderBook();
+      } catch (e) {
+        R.innerHTML = '<p class="note badText">⚠ ' + esc(e.message) + '</p>';
+      } finally {
+        checkRun = null; btn.textContent = '🔍 Check addresses';
+      }
+    };
+
     /* -------- Team sync -------- */
     if (window.TeamSync) wireSync();
+  }
+
+  function renderAddrReport(b, done, total, fatal, cancelled) {
+    const row = (c, why) => '<div class="ar-row"><b>' + esc(c.name) + '</b> <span class="code">' + esc(c.code) + '</span> — ' +
+      esc(c.address || 'no address on file') + (why ? ' <i>' + why + '</i>' : '') + '</div>';
+    const sect = (title, arr, cls, why) => arr.length
+      ? '<p class="ar-h ' + cls + '">' + title + ' (' + arr.length + ')</p>' + arr.map(c => row(c, why)).join('')
+      : '';
+    let h = '<p><b>Address check ' + (fatal ? 'stopped (' + fatal + ')' : cancelled ? 'stopped' : 'complete') + '</b> — ' + done + ' of ' + total + ' customers: ' +
+      '<span class="okText">' + b.exact.length + ' exact ✓</span> · ' +
+      '<span class="' + (b.partial.length ? 'badText' : '') + '">' + b.partial.length + ' guessed ⚠</span> · ' +
+      '<span class="' + (b.suspect.length ? 'badText' : '') + '">' + b.suspect.length + ' outside area</span> · ' +
+      '<span class="' + (b.failed.length ? 'badText' : '') + '">' + b.failed.length + ' not found</span> · ' +
+      '<span class="' + (b.missing.length ? 'badText' : '') + '">' + b.missing.length + ' no address</span></p>';
+    if (fatal) h += '<p class="note badText">' + esc(hintForStatus(fatal)) + '</p>';
+    h += sect('No address on file — add one (✎ in the Address book)', b.missing, 'badText', '');
+    h += sect('Google cannot find these — fix the address', b.failed, 'badText', '');
+    h += sect('Pinned OUTSIDE the delivery area — almost certainly wrong', b.suspect, 'badText', '');
+    h += sect('Partial match — Google guessed the location; verify these', b.partial, 'warnText', '');
+    h += sect('Could not be checked (network hiccup) — run again', b.unknown, 'warnText', '');
+    if (!fatal && !cancelled && !b.missing.length && !b.failed.length && !b.suspect.length && !b.partial.length && !b.unknown.length) {
+      h += '<p class="okText"><b>Every address located exactly ✓</b></p>';
+    }
+    h += '<p class="note">Fix any of the above in the Address book tab (✎ edit — the address re-checks itself when you save), then run the check again.</p>';
+    return h;
   }
 
   function wireSync() {
@@ -942,6 +1055,7 @@
           try {
             settings = { ...DEFAULT_SETTINGS, ...s };
             settings.depot = { ...DEFAULT_SETTINGS.depot, ...(s.depot || {}) };
+            enforceDepot();
             localStorage.setItem('bd_settings', JSON.stringify(settings));
             updateKeyBanner(); renderPlan();
             if ($('#page-settings').style.display !== 'none') renderSettings();

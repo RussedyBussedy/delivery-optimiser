@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Blind Designs · Delivery Optimiser</title>
-<link rel="stylesheet" href="styles.css?v=2">
+<link rel="stylesheet" href="styles.css?v=3">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚚</text></svg>">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -112,6 +112,10 @@
         <button class="btn ghost" id="geocodeAll">📍 Geocode entire address book</button>
         <button class="btn small ghost" id="clearGeo" title="Forget all cached customer coordinates">Clear cached geocodes</button>
         <span class="note" id="geocodeAllStatus"></span></div>
+      <div class="form-row"><label>Verify</label>
+        <button class="btn ghost" id="checkAddr">🔍 Check addresses</button>
+        <span class="note">Grades every customer address: located exactly ✓ · Google guessed ⚠ · outside the delivery area · not found · missing.</span></div>
+      <div id="addrReport" class="addr-report" style="display:none"></div>
     </div>
 
     <div class="card">
@@ -159,13 +163,13 @@
 
 <div id="toasts"></div>
 
-<script src="data-regions.js?v=2"></script>
+<script src="data-regions.js?v=3"></script>
 <script src="data-customers.js?v=2"></script>
 <script src="optimiser.js?v=3"></script>
-<script src="google.js?v=2"></script>
+<script src="google.js?v=3"></script>
 <script src="firebase-config.js?v=2"></script>
 <script src="sync.js?v=2"></script>
 <script src="pdfgen.js?v=3"></script>
-<script src="app.js?v=3"></script>
+<script src="app.js?v=4"></script>
 </body>
 </html>

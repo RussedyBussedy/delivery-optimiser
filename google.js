@@ -38,6 +38,13 @@
   const norm = a => (a || '').toLowerCase().replace(/\s+/g, ' ').trim();
   const persist = () => { try { localStorage.setItem(CACHE_KEY, JSON.stringify(cache)); } catch (e) { console.warn(e); } };
 
+  /* Address quality grades (per device): exact | partial | suspect | failed */
+  const QUALITY_KEY = 'bd_geoquality_v1';
+  const quality = JSON.parse(localStorage.getItem(QUALITY_KEY) || '{}');
+  const persistQ = () => { try { localStorage.setItem(QUALITY_KEY, JSON.stringify(quality)); } catch (e) { console.warn(e); } };
+  const setQuality = (k, q) => { if (quality[k] !== q) { quality[k] = q; persistQ(); } };
+  const getQuality = address => quality[norm(address)] || null;
+
   function cachedCoords(address) {
     const c = cache[norm(address)];
     return c ? { lat: c[0], lng: c[1] } : null;
@@ -85,11 +92,16 @@
       } catch (e) { clearTimeout(timer); console.error(e); finish(null, 'JS_ERROR'); }
     });
     await new Promise(r => setTimeout(r, 120)); // stay under QPS limits
-    if (!res || !res[0]) return null;
+    if (!res || !res[0]) {
+      // only grade the ADDRESS as bad for address-level errors (not system errors)
+      if (lastStatus === 'ZERO_RESULTS' || lastStatus === 'INVALID_REQUEST' || lastStatus === 'NOT_FOUND') setQuality(k, 'failed');
+      return null;
+    }
     const loc = res[0].geometry.location;
     const out = { lat: loc.lat(), lng: loc.lng(), partial: !!res[0].partial_match, formatted: res[0].formatted_address };
     // sanity: must be inside greater Gauteng box
     if (out.lat < -26.9 || out.lat > -25.2 || out.lng < 27.2 || out.lng > 29.0) out.suspect = true;
+    setQuality(k, out.suspect ? 'suspect' : (out.partial ? 'partial' : 'exact'));
     if (!out.suspect) {                 // never cache suspect results
       cache[k] = [out.lat, out.lng];
       persist();
@@ -129,6 +141,7 @@
   const api = {
     loadApi, geocode, cachedCoords, directionsRoute,
     exportCache, importCache, replaceCache, clearCache, cacheSize,
+    getQuality,
     onCacheChange: null,
     get isLoaded() { return loaded; },
     get lastStatus() { return lastStatus; },
