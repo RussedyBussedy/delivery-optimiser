@@ -50,19 +50,42 @@
     return c ? { lat: c[0], lng: c[1] } : null;
   }
 
+  /* Manual pins: cache entries [lat, lng, 'p'] are human-verified positions.
+     They win over Google geocodes, sync to the team, and are never
+     overwritten by automatic re-geocoding.                                */
+  const isPinned = address => { const c = cache[norm(address)]; return !!(c && c[2] === 'p'); };
+  const getPin = address => { const c = cache[norm(address)]; return (c && c[2] === 'p') ? { lat: c[0], lng: c[1], pinned: true } : null; };
+  function setPin(address, lat, lng) {
+    const k = norm(address);
+    if (!k) return;
+    cache[k] = [+lat.toFixed(7), +lng.toFixed(7), 'p'];
+    persist();
+    if (typeof api.onCacheChange === 'function') { try { api.onCacheChange(); } catch (e) { } }
+  }
+  function clearPin(address) {
+    const k = norm(address);
+    if (cache[k]) { delete cache[k]; persist(); }
+    if (quality[k]) { delete quality[k]; persistQ(); }
+    if (typeof api.onCacheChange === 'function') { try { api.onCacheChange(); } catch (e) { } }
+  }
+
   /* Cache sharing hooks (used by Team sync) */
+  const validEntry = v => Array.isArray(v) && v.length >= 2 && isFinite(v[0]) && isFinite(v[1]);
   function exportCache() { return { ...cache }; }
-  function importCache(obj) {          // merge: only adds entries we don't have
-    let added = 0;
+  function importCache(obj) {          // merge: add missing; incoming manual pins upgrade plain entries
+    let changed = 0;
     for (const [k, v] of Object.entries(obj || {})) {
-      if (!cache[k] && Array.isArray(v) && v.length === 2) { cache[k] = v; added++; }
+      if (!validEntry(v)) continue;
+      const mine = cache[k];
+      if (!mine) { cache[k] = v; changed++; }
+      else if (v[2] === 'p' && mine[2] !== 'p') { cache[k] = v; changed++; } // pin beats geocode
     }
-    if (added) persist();
-    return added;
+    if (changed) persist();
+    return changed;
   }
   function replaceCache(obj) {
     for (const k of Object.keys(cache)) delete cache[k];
-    for (const [k, v] of Object.entries(obj || {})) if (Array.isArray(v) && v.length === 2) cache[k] = v;
+    for (const [k, v] of Object.entries(obj || {})) if (validEntry(v)) cache[k] = v;
     persist();
   }
   function clearCache() { replaceCache({}); localStorage.removeItem(CACHE_KEY); }
@@ -70,6 +93,8 @@
 
   async function geocode(address, regionHint, force) {
     const k = norm(address);
+    // a manual pin always wins — even over a forced re-check
+    if (cache[k] && cache[k][2] === 'p') { lastStatus = 'OK'; return { lat: cache[k][0], lng: cache[k][1], cached: true, pinned: true }; }
     if (cache[k] && !force) { lastStatus = 'OK'; return { lat: cache[k][0], lng: cache[k][1], cached: true }; }
     if (authFailed) { lastStatus = 'AUTH_FAILURE'; return null; }
     let g;
@@ -141,7 +166,7 @@
   const api = {
     loadApi, geocode, cachedCoords, directionsRoute,
     exportCache, importCache, replaceCache, clearCache, cacheSize,
-    getQuality,
+    getQuality, isPinned, getPin, setPin, clearPin,
     onCacheChange: null,
     get isLoaded() { return loaded; },
     get lastStatus() { return lastStatus; },

@@ -52,6 +52,7 @@ main{max-width:1180px;margin:14px auto;padding:0 14px}
 .badge{background:#e8eef5;color:var(--navy);border-radius:9px;padding:1px 7px;font-size:10.5px;margin-left:6px}
 .badge.warn{background:#fdf0dc;color:var(--warn)}
 .badge.bad{background:#fae4e0;color:var(--bad)}
+.badge.ok{background:#e2f2e8;color:var(--ok)}
 .heldtag{font-size:10.5px;color:var(--warn)}
 
 .vans{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:12px}
@@ -111,6 +112,9 @@ textarea:focus{outline:2px solid #1f5fa833}
 /* ---- Manual customer form ---- */
 .cust-form{border:1.5px dashed var(--blue);border-radius:10px;padding:10px 14px;margin:6px 0 12px;background:#f7fafd}
 .cust-form>b{color:var(--navy);font-size:13.5px}
+
+/* ---- Customer form map (locate & pin) ---- */
+#cfMap{height:320px;border:1.5px solid var(--blue);border-radius:10px;margin:4px 0 10px}
 
 /* ---- Address check report ---- */
 .addr-report{border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-top:10px;max-height:340px;overflow:auto;background:#fafbfd;font-size:13px}

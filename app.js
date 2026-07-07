@@ -559,8 +559,10 @@
       : all.length + ' matches' + (all.length > 60 ? ' (showing 60)' : '');
     $('#bookList').innerHTML = list.map(c => {
       const col = (window.REGIONS[c.area] || {}).color || '#999';
+      const pinned = c.address && window.GoogleRouting.isPinned(c.address);
       const q = c.address ? window.GoogleRouting.getQuality(c.address) : null;
       const qBadge =
+        pinned ? '<span class="badge ok" title="Position manually pinned on the map — used for all routing">📌 pinned</span>' :
         q === 'partial' ? '<span class="badge warn" title="Google could not match this address exactly — verify it">⚠ check address</span>' :
         q === 'suspect' ? '<span class="badge bad" title="Pinned outside the delivery area — address probably wrong">⚠ outside area</span>' :
         q === 'failed' ? '<span class="badge bad" title="Google cannot find this address">✗ not found</span>' : '';
@@ -593,6 +595,57 @@
 
   /* ---------------- Manual customer add / edit ---------------- */
   let editingCode = null;
+  let cfMap = null, cfMarker = null, cfPinDirty = false;
+
+  async function ensureCfMap(center) {
+    await window.GoogleRouting.loadApi(settings.apiKey);
+    $('#cfMap').style.display = '';           // must be visible BEFORE map creation
+    if (!cfMap) {
+      cfMap = new google.maps.Map($('#cfMap'), {
+        center, zoom: 17, mapTypeControl: true, streetViewControl: false, fullscreenControl: true
+      });
+      cfMarker = new google.maps.Marker({ map: cfMap, draggable: true, title: 'Drag me to the exact building / gate' });
+      cfMarker.addListener('dragend', () => {
+        cfPinDirty = true;
+        $('#cfPinStatus').textContent = '📌 Pin moved — press "Save customer" to keep this exact position (it will be used for all future routing).';
+      });
+    }
+    cfMap.setCenter(center);
+    if (cfMap.getZoom() < 16) cfMap.setZoom(17);
+  }
+
+  /* Locate the typed address on the embedded map. force=true re-checks with Google. */
+  async function locateOnMap(force) {
+    if (!settings.apiKey) { toast('Add and save a Google API key first (Settings)', true); return; }
+    const addr = cleanAddr($('#cfAddr').value);
+    if (!addr) { toast('Type the delivery address first', true); return; }
+    $('#cfPinStatus').textContent = 'Locating…';
+    $('#cfUnpin').style.display = 'none';
+    try {
+      const pin = window.GoogleRouting.getPin(addr);
+      let pos, msg;
+      if (pin) {
+        pos = pin;
+        msg = '📌 Using the manually pinned position.';
+        $('#cfUnpin').style.display = '';
+      } else {
+        const g = await window.GoogleRouting.geocode(addr, $('#cfArea').value, force);
+        if (!g) {
+          $('#cfPinStatus').textContent = '✗ Could not locate (' + window.GoogleRouting.lastStatus + '). ' + hintForStatus(window.GoogleRouting.lastStatus);
+          return;
+        }
+        pos = { lat: g.lat, lng: g.lng };
+        msg = g.suspect ? '⚠ Pinned OUTSIDE the delivery area — the address looks wrong. '
+          : g.partial ? '⚠ Google guessed this position (partial match) — check it. '
+          : '✓ Located' + (g.formatted ? ': ' + g.formatted : '') + '. ';
+      }
+      await ensureCfMap(pos);
+      cfMarker.setPosition(pos);
+      cfPinDirty = false;
+      $('#cfPinStatus').textContent = msg + ' Drag the pin to correct it, then Save.';
+    } catch (e) { $('#cfPinStatus').textContent = '✗ ' + e.message; }
+  }
+
   function openCustForm(c) {
     editingCode = c ? c.code : null;
     $('#cfTitle').textContent = c ? 'Edit customer — ' + c.name : 'New customer';
@@ -608,9 +661,19 @@
     if (cur && !window.REGIONS[cur]) opts += '<option value="' + esc(cur) + '" selected>' + esc(cur) + '</option>';
     $('#cfArea').innerHTML = opts;
     $('#cfStatus').textContent = '';
+    $('#cfPinStatus').textContent = '';
+    $('#cfUnpin').style.display = 'none';
+    $('#cfMap').style.display = 'none';
+    cfPinDirty = false;
+    // if we already know where this address is (cached or pinned), show it instantly — no API cost
+    if (settings.apiKey && c && c.address && window.GoogleRouting.cachedCoords(c.address)) locateOnMap(false);
     $('#cfName').focus();
   }
-  function closeCustForm() { $('#custForm').style.display = 'none'; editingCode = null; }
+  function closeCustForm() {
+    $('#custForm').style.display = 'none';
+    $('#cfMap').style.display = 'none';
+    editingCode = null; cfPinDirty = false;
+  }
 
   async function saveCustForm(alsoAdd) {
     const name = $('#cfName').value.trim();
@@ -630,6 +693,16 @@
     rec.area = $('#cfArea').value || rec.area || '';
     const areaWasAuto = !$('#cfArea').value;
     const wasEdit = !!editingCode;
+    // dragged pin? persist it as the human-verified position (syncs to the team)
+    if (cfPinDirty && cfMarker && $('#cfMap').style.display !== 'none') {
+      const p = cfMarker.getPosition();
+      window.GoogleRouting.setPin(addr, p.lat(), p.lng());
+      if (areaWasAuto) { const region = regionOfPoint({ lat: p.lat(), lng: p.lng() }); if (region) rec.area = region; }
+      const st = day.stops.find(s => s.code === rec.code);
+      if (st) { st.lat = p.lat(); st.lng = p.lng(); st.geo = 'exact'; st.area = rec.area || st.area; day.result = null; saveDay(); renderPlan(); }
+      toast('Position pinned 📌 — this exact spot will be used for routing (shared with the team)');
+      cfPinDirty = false;
+    }
     // save immediately — geocoding happens in the background
     persistBook();
     closeCustForm();
@@ -650,7 +723,7 @@
       switchTab('plan');
     }
     // background: pin the address on the map so routing is precise
-    if (settings.apiKey) {
+    if (settings.apiKey && !window.GoogleRouting.isPinned(addr)) {
       (async () => {
         try {
           await window.GoogleRouting.loadApi(settings.apiKey);
@@ -876,6 +949,7 @@
           if (checkRun.cancel) break;
           i++;
           if (!c.address) { buckets.missing.push(c); continue; }
+          if (window.GoogleRouting.isPinned(c.address)) { buckets.exact.push(c); continue; } // human-verified
           let q = window.GoogleRouting.getQuality(c.address);
           if (!q) { // not graded on this device yet — verify live (also re-grades old cached entries)
             const el = $('#arProgress');
@@ -1041,6 +1115,15 @@
     $('#cfCancel').onclick = closeCustForm;
     $('#cfSave').onclick = () => saveCustForm(false);
     $('#cfSaveAdd').onclick = () => saveCustForm(true);
+    $('#cfLocate').onclick = () => locateOnMap(true);   // fresh check against Google
+    $('#cfUnpin').onclick = () => {
+      const addr = cleanAddr($('#cfAddr').value);
+      if (!addr) return;
+      window.GoogleRouting.clearPin(addr);
+      $('#cfUnpin').style.display = 'none';
+      toast('Manual pin removed — Google\'s automatic position will be used again');
+      locateOnMap(true);
+    };
     wireSettings();
     updateKeyBanner();
     $('#keyNudgeBtn').onclick = () => switchTab('settings');

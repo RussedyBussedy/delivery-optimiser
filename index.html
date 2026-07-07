@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Blind Designs · Delivery Optimiser</title>
-<link rel="stylesheet" href="styles.css?v=3">
+<link rel="stylesheet" href="styles.css?v=4">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚚</text></svg>">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -79,6 +79,12 @@
           <div><label>Area</label><select id="cfArea"></select></div>
         </div>
         <div class="form-row"><label>Delivery address *</label><input id="cfAddr" placeholder="Unit / street, suburb, city"></div>
+        <div class="form-row">
+          <button class="btn ghost" id="cfLocate">📍 Locate on map</button>
+          <button class="btn small ghost" id="cfUnpin" style="display:none" title="Remove the manual pin and go back to Google's automatic position">Remove manual pin</button>
+          <span class="note" id="cfPinStatus"></span>
+        </div>
+        <div id="cfMap" style="display:none"></div>
         <div class="form-row">
           <button class="btn primary" id="cfSave">Save customer</button>
           <button class="btn" id="cfSaveAdd">Save + add to today's plan</button>
@@ -166,10 +172,10 @@
 <script src="data-regions.js?v=3"></script>
 <script src="data-customers.js?v=2"></script>
 <script src="optimiser.js?v=3"></script>
-<script src="google.js?v=3"></script>
+<script src="google.js?v=4"></script>
 <script src="firebase-config.js?v=2"></script>
 <script src="sync.js?v=2"></script>
 <script src="pdfgen.js?v=3"></script>
-<script src="app.js?v=4"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>
